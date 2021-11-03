@@ -42,7 +42,7 @@ parser.add_argument('--network', default="ResNet18", type=str, help='network typ
                     'DPN92|huffleNetG2|SENet18|EfficientNetB0|RegNetX_200MF|SimpleDLA')
 parser.add_argument('--world_size', default=2, type=int, help='gpu num')
 parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
-parser.add_argument('--epoch', default=20, type=int, help='epoch')
+parser.add_argument('--epoch', default=200, type=int, help='epoch')
 parser.add_argument('--batchsize', default=256, type=int, help='epoch')
 parser.add_argument('--resume', '-r', action='store_true',help='resume from checkpoint')
 parser.add_argument('--debug',action='store_true',help='debugging mode')
