@@ -19,35 +19,47 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 import torch.multiprocessing as mp
 import torch.distributed as dist
+import git
+#mlfow settings
 from mlflow import log_metric, log_param, log_artifacts
 import mlflow
 mlflow.set_tracking_uri("http://192.168.11.21:5000")
 mlflow.set_experiment("cifar10-experiment")
+#logging settings
 logging.basicConfig(filename="log.txt", level=logging.INFO)
 logger = getLogger(__name__)
+# DDP settings
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
     dist.init_process_group("gloo", rank=rank, world_size=world_size)
 def cleanup():
     dist.destroy_process_group()
-
-
+# hparam settings
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
+parser.add_argument('--network', default="ResNet18", type=str, help='network type [ResNet18|PreActResNet18|'\
+                    'GoogLeNet|DenseNet121|ResNeXt29_2x64d|MobileNet|MobileNetV2'\
+                    'DPN92|huffleNetG2|SENet18|EfficientNetB0|RegNetX_200MF|SimpleDLA')
 parser.add_argument('--world_size', default=2, type=int, help='gpu num')
 parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
-parser.add_argument('--resume', '-r', action='store_true',
-                    help='resume from checkpoint')
+parser.add_argument('--epoch', default=20, type=int, help='epoch')
+parser.add_argument('--batchsize', default=256, type=int, help='epoch')
+parser.add_argument('--resume', '-r', action='store_true',help='resume from checkpoint')
+parser.add_argument('--debug',action='store_true',help='debugging mode')
 args = parser.parse_args()
+if not args.debug:
+    repo = git.Repo("./")
+    print(repo.git.diff('HEAD'))
+    exit()
+    
+#main function
 def train_and_test(rank, world_size):
     if rank ==0:
-        for k,v in vars(args):
+        for k,v in vars(args).items():
             log_param(k,v)
-            
-
     def log(message):
         if rank == 0:
-            # print(message)
+            print(message)
             logger.info(message)
 
     setup(rank, world_size)
@@ -74,37 +86,22 @@ def train_and_test(rank, world_size):
         root='./data', train=True, download=True, transform=transform_train)
     train_sampler = DistributedSampler(trainset)
     trainloader = torch.utils.data.DataLoader(
-        trainset, batch_size=128, shuffle=False, num_workers=2, sampler=train_sampler)
+        trainset, batch_size=args.batchsize, shuffle=False, num_workers=2, sampler=train_sampler)
 
     testset = torchvision.datasets.CIFAR10(
         root='./data', train=False, download=True, transform=transform_test)
     test_sampler = DistributedSampler(testset)
     testloader = torch.utils.data.DataLoader(
-        testset, batch_size=100, shuffle=False, num_workers=2, sampler=test_sampler)
+        testset, batch_size=args.batchsize, shuffle=False, num_workers=2, sampler=test_sampler)
 
     classes = ('plane', 'car', 'bird', 'cat', 'deer',
             'dog', 'frog', 'horse', 'ship', 'truck')
 
     # Model
     log('==> Building model..')
-    # net = VGG('VGG19')
-    # net = ResNet18()
-    # net = PreActResNet18()
-    # net = GoogLeNet()
-    # net = DenseNet121()
-    # net = ResNeXt29_2x64d()
-    # net = MobileNet()
-    # net = MobileNetV2()
-    # net = DPN92()
-    # net = ShuffleNetG2()
-    # net = SENet18()
-    # net = ShuffleNetV2(1)
-    # net = EfficientNetB0()
-    # net = RegNetX_200MF()
-    net = SimpleDLA()
+    net = globals()[args.network]()
     net = net.to(device)
     net = DDP(net, device_ids=[rank])
-
 
     if args.resume:
         # Load checkpoint.
@@ -120,8 +117,6 @@ def train_and_test(rank, world_size):
                         momentum=0.9, weight_decay=5e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
 
-
-    # Training
     def train(epoch):
         log('\nEpoch: %d' % epoch)
         net.train()
@@ -141,13 +136,15 @@ def train_and_test(rank, world_size):
             total += targets.size(0)
             correct += predicted.eq(targets).sum().item()
             if batch_idx % 10 == 0:
+                global_steps = batch_idx + epoch*len(trainloader)
                 if rank == 0:
-                    log_metric("train_Loss",(train_loss/(batch_idx+1))
-                    log_metric("train_Acc",100.*correct/total)
-                log('Loss: %.3f | Acc: %.3f%% (%d/%d)'
-                        % (train_loss/(batch_idx+1), 100.*correct/total, correct, total))
+                    log_metric("train_Loss",(train_loss/(batch_idx+1)), global_steps)
+                    log_metric("train_Acc",correct/total, global_steps)
+                log('global_step %d|epoch %d|step %d|Loss: %.3f | Acc: %.3f (%d/%d)'
+                        % (global_steps,epoch,batch_idx,train_loss/(batch_idx+1), correct/total, correct, total))
     def test(epoch):
         nonlocal best_acc
+        nonlocal best_epoch
         net.eval()
         test_loss = 0
         correct = 0
@@ -164,13 +161,14 @@ def train_and_test(rank, world_size):
                 correct += predicted.eq(targets).sum().item()
                 if batch_idx % 10 == 0:
                     if rank == 0:
-                        log_metric("test_loss",(test_loss/(batch_idx+1))
-                        log_metric("test_Acc",100.*correct/total)
-                    log('Loss: %.3f | Acc: %.3f%% (%d/%d)'
-                            % (test_loss/(batch_idx+1), 100.*correct/total, correct, total))
+                        global_steps = batch_idx + epoch*len(trainloader)
+                        log_metric("test_loss",(test_loss/(batch_idx+1)), global_steps)
+                        log_metric("test_Acc",correct/total, global_steps)
+                    log('Loss: %.3f | Acc: %.3f (%d/%d)'
+                            % (test_loss/(batch_idx+1), correct/total, correct, total))
 
         # Save checkpoint.
-        acc = 100.*correct/total
+        acc = correct/total
         if rank==0 and acc > best_acc:
             print('Saving..')
             state = {
@@ -184,14 +182,16 @@ def train_and_test(rank, world_size):
             best_acc = acc
             best_epoch = epoch
 
-
-    for epoch in range(start_epoch, start_epoch+200):
+    for epoch in range(start_epoch, start_epoch+args.epoch):
         train(epoch)
         test(epoch)
         scheduler.step()
-    log_metric("best_epoch", best_epoch)
-    log_metric("best_acc", best_acc)
-    log_artifacts("checkpoint")
+    # mlflow logging
+    if rank == 0:
+        log_metric("best_epoch", best_epoch)
+        log_metric("best_acc", best_acc)
+        log_artifacts("checkpoint")
+    # DDP post process
     cleanup()
 
 if __name__ == "__main__":
