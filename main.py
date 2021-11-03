@@ -50,8 +50,9 @@ args = parser.parse_args()
 if not args.debug:
     repo = git.Repo("./")
     uncommitted = repo.is_dirty()
-    print(uncommitted)
-    exit()
+    if uncommitted:
+        print("コミットしてから実行してください")
+        exit()
     
 #main function
 def train_and_test(rank, world_size):
