@@ -49,7 +49,8 @@ parser.add_argument('--debug',action='store_true',help='debugging mode')
 args = parser.parse_args()
 if not args.debug:
     repo = git.Repo("./")
-    print(repo.git.diff('HEAD'))
+    uncommitted = repo.is_dirty()
+    print(uncommitted)
     exit()
     
 #main function
